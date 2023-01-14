@@ -1,6 +1,7 @@
 AC_INIT([gridcoin_addess_estimator], [1.0.0])
 AM_INIT_AUTOMAKE([-Wall -Werror foreign])
 
+LT_INIT([pic-only])
 AC_PROG_CC
 AC_PROG_CXX
 
