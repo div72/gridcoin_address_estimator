@@ -1,0 +1,4 @@
+[submodule "src/Gridcoin-Research"]
+	path = src/Gridcoin-Research
+	url = https://github.com/gridcoin-community/Gridcoin-Research
+	branch = master
