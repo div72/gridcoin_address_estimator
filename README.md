@@ -14,8 +14,8 @@ Library requirements are the same as Gridcoin-Research. To compile:
 git clone --recurse-submodules https://github.com/div72/gridcoin_address_estimator.git
 cd gridcoin_address_estimator
 ./autogen.sh
-./configure # with --with-incompatible-bdb if you have BDB 5.3.
-make # -j<core amount> to parallelize the build.
+./configure
+GRIDCOINRESEARCHD_LDFLAGS=$(make -s -C src/Gridcoin-Research/src print-gridcoinresearchd_LDADD | cut -d= -f2- | perl -pe 's@(^|\s)(?!-)([^ ]+)@Gridcoin-Research/src/\2 @g') make
 ```
 
 ## Usage
