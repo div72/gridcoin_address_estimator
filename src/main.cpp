@@ -1,9 +1,9 @@
 #include <iostream>
 
-#include <base58.h>
 #include <chainparams.h>
 #include <dbwrapper.h>
 #include <gridcoin/voting/vote.h>
+#include <key_io.h>
 #include <node/blockstorage.h>
 #include <util/system.h>
 
@@ -114,10 +114,9 @@ int main(int argc, char** argv) {
                                 wallet_wealth_map[cpid] = amount;
                             } else {
                                 // Use the first address.
-                                CBitcoinAddress address;
                                 // TODO: balance check?
-                                address.Set(payload->m_claim.m_balance_claim.m_address_claims[0].m_public_key.GetID());
-                                wallet_wealth_map[address.ToString()] = amount;
+                                auto address = EncodeDestination(payload->m_claim.m_balance_claim.m_address_claims[0].m_public_key.GetID());
+                                wallet_wealth_map[address] = amount;
                             }
                         }
                     }
