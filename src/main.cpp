@@ -7,6 +7,20 @@
 #include <node/blockstorage.h>
 #include <util/system.h>
 
+std::atomic<int64_t> GLOBAL_GROUP_COUNTER(0);
+
+struct AddressData {
+    CAmount balance;
+    int64_t group_id;
+    uint32_t last_stake_timestamp;
+
+    AddressData() {
+        balance = 0;
+        group_id = ++GLOBAL_GROUP_COUNTER;
+        last_stake_timestamp = 0;
+    }
+};
+
 int main(int argc, char** argv) {
     std::string error;
 
@@ -14,7 +28,6 @@ int main(int argc, char** argv) {
     SetupHelpOptions(args);
 
     args.AddArg("-testnet", "Run on testnet chain.", ArgsManager::ALLOW_BOOL, OptionsCategory::OPTIONS);
-    args.AddArg("-poll_txid=<poll txid>", "The poll txid to scan the votes for.", ArgsManager::ALLOW_STRING, OptionsCategory::OPTIONS);
 
     if (!args.ParseParameters(argc, argv, error)) {
         std::cerr << error << std::endl;
@@ -31,15 +44,6 @@ int main(int argc, char** argv) {
         SelectParams(CBaseChainParams::TESTNET);
         fTestNet = true;
     }
-
-    uint256 poll_txid;
-
-    if (args.GetArg("-poll_txid", "invalid") == "invalid" || (poll_txid = uint256S(args.GetArg("-poll_txid", ""))).IsNull()) {
-        std::cerr << "Invalid poll txid." << std::endl;
-        return EXIT_FAILURE;
-    }
-
-    std::cout << "Configured to run for poll: " << poll_txid.GetHex() << std::endl;
 
     if (!gArgs.ReadConfigFiles(error, true)) {
         std::cerr << error << std::endl;
@@ -66,59 +70,66 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
+    std::map<std::string, AddressData> wallet_wealth_map;
+    CBlock block;
+    CTransaction tx2;
+    CTxDestination dest;
 
-    std::map<std::string, CAmount> wallet_wealth_map;
     for (CBlockIndex* pindex = pindexGenesisBlock; pindex != nullptr; pindex = pindex->pnext) {
         std::cout << pindex->nHeight << "/" << pindexBest->nHeight << " " << ((double)pindex->nHeight / pindexBest->nHeight) * 100 << "%\r";
-        if (pindex->IsContract()) {
-            CBlock block;
-            if (!ReadBlockFromDisk(block, pindex, Params().GetConsensus())) {
-                std::cerr << "Failure while reading block with hash: " << pindex->GetBlockHash().GetHex();
-                return EXIT_FAILURE;
+
+        if (!ReadBlockFromDisk(block, pindex, Params().GetConsensus())) {
+            std::cerr << "Failure while reading block with hash: " << pindex->GetBlockHash().GetHex();
+            return EXIT_FAILURE;
+        }
+
+        for (const auto& tx : block.vtx) {
+            if (!tx.IsCoinBase()) {
+                for (const auto& in : tx.vin) {
+                    if (!ReadTxFromDisk(tx2, in.prevout)) {
+                        continue;
+                    }
+
+                    if (!ExtractDestination(tx2.vout[in.prevout.n].scriptPubKey, dest)) {
+                        continue;
+                    }
+
+                    wallet_wealth_map[EncodeDestination(dest)].balance -= tx2.vout[in.prevout.n].nValue;
+                }
             }
 
-            for (const auto& tx : block.vtx) {
-                for (const auto& contract : tx.GetContracts()) {
-                    if (contract.m_type == GRC::ContractType::VOTE) {
-                        const auto& payload = contract.SharePayloadAs<GRC::Vote>();
-                        if (payload->m_poll_txid == poll_txid) {
-                            CAmount amount = 0;
-                            for (const auto& address_claim : payload->m_claim.m_balance_claim.m_address_claims) {
-                                for (const auto& outpoint : address_claim.m_outpoints) {
-                                    CTxIndex tx_index;
+            if (tx.IsCoinStake()) {
+                assert(ExtractDestination(tx.vout[1].scriptPubKey, dest));
 
-                                    if (!txdb.ReadTxIndex(outpoint.hash, tx_index)) {
-                                        std::cerr << "Error while reading the tx index." << std::endl;
-                                        return EXIT_FAILURE;
-                                    }
+                wallet_wealth_map[EncodeDestination(dest)].last_stake_timestamp = tx.nTime;
+            }
 
-                                    CAutoFile file(OpenBlockFile(tx_index.pos.nFile, tx_index.pos.nBlockPos, "rb"), SER_DISK, CLIENT_VERSION);
+            for (const auto& out : tx.vout) {
+                if (!ExtractDestination(out.scriptPubKey, dest)) {
+                    continue;
+                }
 
-                                    if (file.IsNull()) {
-                                        std::cerr << "Error while opening the block file." << std::endl;
-                                        return EXIT_FAILURE;
-                                    }
+                wallet_wealth_map[EncodeDestination(dest)].balance += out.nValue;
+            }
 
-                                    fseek(file.Get(), tx_index.pos.nTxPos, SEEK_SET);
+            for (const auto& contract : tx.GetContracts()) {
+                if (contract.m_type == GRC::ContractType::VOTE) {
+                    // No address claims for legacy polls.
+                    if (contract.m_version < 2) {
+                        continue;
+                    }
 
-                                    CTransaction tx;
-                                    file >> tx;
+                    const auto& payload = contract.SharePayloadAs<GRC::Vote>();
 
-                                    amount += tx.vout[outpoint.n].nValue;
-                                }
-                            }
+                    int64_t group_id = -1;
+                    for (const auto& address_claim : payload->m_claim.m_balance_claim.m_address_claims) {
+                        auto address = EncodeDestination(address_claim.m_public_key.GetID());
 
-                            std::string cpid = payload->m_claim.m_magnitude_claim.m_mining_id.ToString();
-                            if (cpid != "INVESTOR") {
-                                // User has a CPID.
-                                wallet_wealth_map[cpid] = amount;
-                            } else {
-                                // Use the first address.
-                                // TODO: balance check?
-                                auto address = EncodeDestination(payload->m_claim.m_balance_claim.m_address_claims[0].m_public_key.GetID());
-                                wallet_wealth_map[address] = amount;
-                            }
+                        if (group_id == -1) {
+                            group_id = wallet_wealth_map[address].group_id;
                         }
+
+                        wallet_wealth_map[address].group_id = group_id;
                     }
                 }
             }
@@ -126,7 +137,7 @@ int main(int argc, char** argv) {
     }
 
     std::cout << std::fixed;
-    for (const auto& [id, amount] : wallet_wealth_map) {
-        std::cout << id << "\t" << (double)amount / COIN << std::endl;
+    for (const auto& [address, data] : wallet_wealth_map) {
+        std::cout << data.group_id << "\t" << address << "\t" << data.last_stake_timestamp << "\t" << (double)data.balance / COIN << std::endl;
     }
 }
